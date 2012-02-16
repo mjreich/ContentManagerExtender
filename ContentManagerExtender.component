@@ -30,7 +30,7 @@ use \Cumula\BaseComponent as BaseComponent;
  * The ContentManagerExtender Class defines the following events:
  *
  * #### GatherContentExtensions
- * This event is fired after the boot_startup phase to collect the content type/datastore definitions from listeners.
+ * This event is fired after the BootStartup phase to collect the content type/datastore definitions from listeners.
  * Each listener should return an array of arrays.  Each array should include a 'type' key declaring the content type and a 
  * 'data_store' key referencing a BaseDataStore class used to store the information.
  *
@@ -62,14 +62,14 @@ class ContentManagerExtender extends BaseComponent {
 	}
 	
 	/**
-	 * Standard BaseComponent startup function.  Adds the dispatcher for the gatherContentExtensions event to the after_boot_startup
+	 * Standard BaseComponent startup function.  Adds the dispatcher for the gatherContentExtensions event to the AfterBootStartup
 	 * phase.
 	 *
 	 * @return void
 	 * @author Mike Reich
 	 */
 	public function startup() {		
-		$this->addEventListenerTo('Application', 'after_boot_startup', 'gatherContentExtensions');
+		$this->addEventListenerTo('Application', 'AfterBootStartup', 'gatherContentExtensions');
 	}
 	
 	/**
@@ -91,7 +91,7 @@ class ContentManagerExtender extends BaseComponent {
 	 */
 	public function getTypeDataStores($type) {
 		if(isset($this->_extensions[$type])) {
-			return $this->_extensions[$type]);
+			return $this->_extensions[$type];
 		} else 
 			return false;
 	}
@@ -120,25 +120,51 @@ class ContentManagerExtender extends BaseComponent {
 		//Sanity check array to ensure we aren't creating duplicate events.
 		$exists = array();
 		
+		$this->addEventListenerTo('ContentManager', 'BeforeContentItemCreate', 'dispatchHandler');
+		$this->addEventListenerTo('ContentManager', 'BeforeContentItemUpdate', 'dispatchHandler');
+		$this->addEventListenerTo('ContentManager', 'BeforeContentItemDelete', 'dispatchHandler');
+		$this->addEventListenerTo('ContentManager', 'BeforeContentItemLoad', 'dispatchHandler');
+		$this->addEventListenerTo('ContentManager', 'BeforeContentItemQuery', 'queryHandler');
 		//For each event, we bind to the ContentManager event and create a new type specific event.
-		//TODO: Bind to the before_ContentItem* event to ensure that the new defined events are fired before the 
+		//TODO: Bind to the BeforeContentItem* event to ensure that the new defined events are fired before the 
 		//ContentManager event, rather than in teh middle.
 		foreach($this->_extensions as $type => $config) {
-			if(!in_array($type, $exists)) {
-				$this->addEventListenerTo('ContentManager', 'ContentItemCreate', 'createHandler_'.$type);
-				$this->addEventListenerTo('ContentManager', 'ContentItemUpdate', 'updateHandler_'.$type);
-				$this->addEventListenerTo('ContentManager', 'ContentItemDelete', 'deleteHandler_'.$type);
-				$this->addEventListenerTo('ContentManager', 'ContentItemLoad', 'loadHandler_'.$type);
-				$this->addEventListenerTo('ContentManager', 'ContentItemQuery', 'queryHandler_'.$type);
-			
+			if(!in_array($type, $exists)) {			
 				$cm = \I('ContentManager');
 				$cm->addEvent($type.'Create');
 				$cm->addEvent($type.'Update');
 				$cm->addEvent($type.'Load');
 				$cm->addEvent($type.'Delete');
 				$cm->addEvent($type.'Query');
+				
+				$this->addEventListenerTo('ContentManager', $type.'Create', 'createHandler_'.$type);
+				$this->addEventListenerTo('ContentManager', $type.'Update', 'updateHandler_'.$type);
+				$this->addEventListenerTo('ContentManager', $type.'Delete', 'deleteHandler_'.$type);
+				$this->addEventListenerTo('ContentManager', $type.'Load', 'loadHandler_'.$type);
+				
+				
 				$exists[] = $type;
 			}
+		}
+	}
+
+	public function dispatchHandler($event, $dispatcher, $arg1) {
+		$new_event = str_replace('BeforeContentItem', '', $event);
+		if(isset($arg1->type)) {
+			$type = $arg1->type;
+			switch($event) {
+				case 'BeforeContentItemCreate':
+				case 'BeforeContentItemUpdate':
+				case 'BeforeContentItemLoad':
+				$dispatcher->dispatch($type.$new_event, array(&$arg1), function($new_content) use(&$arg1) {
+					$arg1 = object_merge($arg1, $new_content);
+				});
+				return $arg1;
+				case 'BeforeContentItemDelete':
+				$dispatcher->dispatch($type.$new_event, array(&$arg1));
+				break;
+			}
+			return; 
 		}
 	}
 
@@ -157,7 +183,6 @@ class ContentManagerExtender extends BaseComponent {
 		foreach($r as $config) {
 			$data_stores[] = $config['data_store'];
 		}
-		array_push($params, $type);
 		array_push($params, $data_stores);
 		return call_user_func_array(array(&$this, $func), $params);
 	}
@@ -173,13 +198,7 @@ class ContentManagerExtender extends BaseComponent {
 	 * @return void
 	 * @author Mike Reich
 	 */
-	public function createHandler($event, $dispatcher, $content, $type, $data_stores) {
-		if($content->type != $type)
-			return;
-		$cm = \I('ContentManager');
-		$cm->dispatch($type.'Create', array($content), function($new_item) use ($content) {
-			$content = object_merge($content, $new_item);
-		});	
+	public function createHandler($event, $dispatcher, $content, $data_stores) {
 		foreach($data_stores as $data_store) {
 			if($new_content = $data_store->create($content)) {
 				$content = object_merge($content, $new_content);
@@ -201,14 +220,7 @@ class ContentManagerExtender extends BaseComponent {
 	 * @return void
 	 * @author Mike Reich
 	 */
-	public function updateHandler($event, $dispatcher, $content, $type, $data_stores) {
-		if($content->type != $type)
-			return $content;
-		
-		$cm = \I('ContentManager');
-		$cm->dispatch($type.'Update', array($content), function($new_item) use ($content) {
-			$content = object_merge($content, $new_item);
-		});	
+	public function updateHandler($event, $dispatcher, $content, $data_stores) {
 		foreach($data_stores as $data_store) {
 			if($new_content = $data_store->update($content)) {
 				$content = object_merge($content, $new_content);
@@ -230,12 +242,7 @@ class ContentManagerExtender extends BaseComponent {
 	 * @return void
 	 * @author Mike Reich
 	 */
-	public function deleteHandler($event, $dispatcher, $content, $type, $data_stores) {
-		if($content->type != $type)
-			return;		
-			
-		$cm = \I('ContentManager');
-		$cm->dispatch($type.'Delete', array($id));
+	public function deleteHandler($event, $dispatcher, $content, $data_stores) {
 		foreach($data_stores as $data_store) {
 			if(!$data_store->destroy(array('uuid' => $content->uuid))) {
 				throw new Exception('Could not delete content.');
@@ -254,15 +261,7 @@ class ContentManagerExtender extends BaseComponent {
 	 * @return void
 	 * @author Mike Reich
 	 */
-	public function loadHandler($event, $dispatcher, $content, $type, $data_stores) {
-		if($content->type != $type)
-			return;		
-			
-		$cm = \I('ContentManager');
-		$cm->dispatch($type.'Load', array(&$content), function($new_item) use (&$content) {
-			if(is_array($new_item) || $new_item != false)
-				$content = object_merge($content, $new_item);
-		});	
+	public function loadHandler($event, $dispatcher, $content, $data_stores) {
 		foreach($data_stores as $data_store) {
 			$item = $data_store->query(array('uuid' => $content->uuid));
 			if(isset($item[0])) {
@@ -288,13 +287,15 @@ class ContentManagerExtender extends BaseComponent {
 	 * @return void
 	 * @author Mike Reich
 	 */
-	public function queryHandler($event, $dispatcher, $values, $type, $data_stores) {
+	public function queryHandler($event, $dispatcher, $values) {
 		$results = array();
-		$cm = \I('ContentManager');
-		$cm->dispatch($type.'Query', array($values), function($new_results) use (&$results) {
-			if(count($new_results) > 0 && is_array($results))
-				$results = array_merge($results, $new_results);
-		});
+		$data_stores = array();
+		foreach($this->_extensions as $type => $extensions) {
+			foreach($extensions as $extension) {
+				if(isset($extension['data_store']))
+					$data_stores[] = $extension['data_store'];
+			}
+		}
 		foreach($data_stores as $data_store) {
 			$new_query = array();
 			$intersect_fields = array_intersect(array_keys($data_store->getSchema()->getFields()), array_keys($values));
